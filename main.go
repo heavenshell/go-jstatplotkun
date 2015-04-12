@@ -3,17 +3,29 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
 
+	"code.google.com/p/freetype-go/freetype"
+	"code.google.com/p/freetype-go/freetype/truetype"
 	"github.com/codegangsta/cli"
+	"github.com/vdobler/chart"
+	"github.com/vdobler/chart/imgg"
 )
 
 // Time format for parse string.
-const timeformat = "2006-01-02 15:04:05 -0700"
+const timeformat = "2006-01-02 15:04:05"
+
+var jst = time.FixedZone("Asia/Tokyo", 9*60*60)
 
 type appContex struct {
 	gc   string
@@ -56,14 +68,18 @@ type gcutil struct {
 
 var pattern = regexp.MustCompile("\\s+")
 
-func parseGc(line string) gc {
-	lines := pattern.Split(line, -1)
-	tof64 := func(value string) float64 {
-		var ret, _ = strconv.ParseFloat(value, 64)
-		return ret
-	}
+// Font
+var font *truetype.Font
 
+func tof64(v string) float64 {
+	var ret, _ = strconv.ParseFloat(v, 64)
+	return ret
+}
+
+func parseGc(line string, start time.Time) gc {
+	lines := pattern.Split(line, -1)
 	gc := gc{
+		time: start,
 		S0C:  tof64(lines[0]),
 		S1C:  tof64(lines[1]),
 		S0U:  tof64(lines[2]),
@@ -89,15 +105,15 @@ func parseGcutil(line string) gcutil {
 	return gcutil
 }
 
-func read(targetFileName string) []gc {
-	_, err := os.Stat(targetFileName)
+func read(file string, start *time.Time, interval time.Duration) []gc {
+	_, err := os.Stat(file)
 	if err != nil {
 		log.Fatal(err)
 		os.Exit(1)
 	}
 
 	var fp *os.File
-	fp, err = os.Open(targetFileName)
+	fp, err = os.Open(file)
 	if err != nil {
 		log.Fatal(err)
 		os.Exit(1)
@@ -111,35 +127,92 @@ func read(targetFileName string) []gc {
 	}
 
 	length := len(lines)
-	gcs := make([]gc, length - 1)
+	gcs := make([]gc, length-1)
 	for i := 1; i < length; i++ {
-		gcs[i - 1] = parseGc(string(lines[i]))
+		t := start.Add(interval)
+		gcs[i-1] = parseGc(string(lines[i]), t)
+		start = &t
 	}
 
 	return gcs
 }
 
-func plot(values interface{}) {
+// https://github.com/mattn/gorecast/blob/master/graph.go#L47
+func plot(values interface{}) (error) {
+	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
+	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
+	img := imgg.AddTo(rgba, 0, 0, 800, 600, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
+
+	dt := make([]chart.EPoint, 0, 20)
+
 	switch data := values.(type) {
 	case []gc:
 		for _, v := range data {
-			fmt.Println(v.YGC)
+			dt = append(dt, chart.EPoint{
+				X: float64(v.time.Unix()),
+				Y: float64(v.YGC),
+			})
 		}
 	case []gcutil:
 	default:
 		log.Fatalf("Unkown type %v", data)
 	}
+
+	c := chart.ScatterChart{Title: "YGC"}
+	c.XRange.TicSetting.Grid = 1
+	if len(dt) > 0 {
+		c.AddData("", dt, chart.PlotStyleLinesPoints, chart.Style{})
+	}
+	c.XRange.Time = true
+	c.XRange.TicSetting.TFormat = func(t time.Time, td chart.TimeDelta) string {
+		return t.Format("15:04:05")
+	}
+	c.YRange.Label = "ygc"
+	c.Plot(img)
+	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", "ygc")))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return png.Encode(f, rgba)
+}
+
+func setupFont() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	b, err := ioutil.ReadFile(filepath.Join(cwd, "fonts", "ipaexg.ttf"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	font, err = freetype.ParseFont(b)
+	if err != nil {
+		log.Println(err)
+	}
 }
 
 func run(c *cli.Context) {
-	jstatOption := c.String("gc")
+	//jstatOption := c.String("gc")
 	jstatPath := c.String("path")
+	start := c.String("date")
+	if start == "" {
+		start = time.Now().Format(timeformat)
+	}
+	interval := c.Int("interval") * int(time.Millisecond)
 
-	ctx := appContex{gc: jstatOption, path: jstatPath}
-	fmt.Println(ctx)
-	gcs := read(jstatPath)
+	//ctx := appContex{gc: jstatOption, path: jstatPath}
+
+	t, err := time.Parse(timeformat, start)
+	if err != nil {
+		log.Fatalf("Fail to parse. %v", err)
+	}
+	d := time.Duration(interval)
+
+	gcs := read(jstatPath, &t, d)
 	plot(gcs)
-
 }
 
 func main() {
@@ -161,6 +234,15 @@ func main() {
 				cli.StringFlag{
 					Name:  "path",
 					Usage: "Path to jstat file",
+				},
+				cli.StringFlag{
+					Name:  "date",
+					Usage: "start time",
+				},
+				cli.IntFlag{
+					Name:  "interval",
+					Usage: "interval of jstat",
+					Value: 1000,
 				},
 			},
 		},
