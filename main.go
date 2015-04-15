@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"time"
@@ -138,6 +139,59 @@ func read(file string, start *time.Time, interval time.Duration) []gc {
 	return gcs
 }
 
+func prepare(values interface{}, graphs []string) [][]chart.EPoint {
+	results := make([][]chart.EPoint, 0, 20)
+	for _, g := range graphs {
+		ep := make([]chart.EPoint, 0, 20)
+		switch data := values.(type) {
+		case []gc:
+			for _, v := range data {
+				r := reflect.ValueOf(v)
+				f := reflect.Indirect(r).FieldByName(g)
+				ep = append(ep, chart.EPoint{
+					X:      float64(v.time.Unix()),
+					Y:      float64(f.Float()),
+					DeltaX: math.NaN(),
+					DeltaY: math.NaN(),
+				})
+			}
+			results = append(results, ep)
+		default:
+			log.Fatalf("Unkown type %v", data)
+		}
+	}
+	return results
+}
+
+func plot(eps [][]chart.EPoint, title string) error {
+	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
+	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
+	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
+
+	c := chart.ScatterChart{Title: title}
+	c.XRange.TicSetting.Grid = 1
+	for _, v := range eps {
+		c.AddData("", v, chart.PlotStyleLines, chart.Style{})
+	}
+
+	c.XRange.Time = true
+	c.XRange.TicSetting.TFormat = func(t time.Time, td chart.TimeDelta) string {
+		return t.Format("15:04:05")
+	}
+	c.YRange.Label = "count"
+
+	c.Plot(img)
+
+	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", title)))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return png.Encode(f, rgba)
+}
+
+/*
 // https://github.com/mattn/gorecast/blob/master/graph.go#L47
 func plot(values interface{}, category string) (error) {
 	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
@@ -156,6 +210,12 @@ func plot(values interface{}, category string) (error) {
 	switch data := values.(type) {
 	case []gc:
 		for _, v := range data {
+			r := reflect.ValueOf(v)
+			f := reflect.Indirect(r).FieldByName("EC")
+			fmt.Println(f.Float())
+
+
+
 			ec = append(ec, chart.EPoint{
 				X: float64(v.time.Unix()),
 				Y: float64(v.EC),
@@ -183,7 +243,6 @@ func plot(values interface{}, category string) (error) {
 				DeltaX: math.NaN(),
 				DeltaY: math.NaN(),
 			})
-
 
 			s1c = append(s1c, chart.EPoint{
 				X: float64(v.time.Unix()),
@@ -235,6 +294,7 @@ func plot(values interface{}, category string) (error) {
 
 	return png.Encode(f, rgba)
 }
+*/
 
 func setupFont() {
 	cwd, err := os.Getwd()
@@ -270,9 +330,20 @@ func run(c *cli.Context) {
 	d := time.Duration(interval)
 
 	gcs := read(jstatPath, &t, d)
-	plot(gcs, "eden")
-	plot(gcs, "survivor0")
-	plot(gcs, "survivor1")
+
+	categories := map[string][]string{
+		"Survivor0": []string{"S0C", "S0U"},
+		"Survivor1": []string{"S1C", "S1U"},
+		"Eden":      []string{"EC", "EU"},
+		"Old":       []string{"OC", "OU"},
+		"Perm":      []string{"PC", "PU"},
+		"GcCount":   []string{"YGC", "FGC"},
+	}
+
+	for k, v := range categories {
+		eps := prepare(gcs, v)
+		plot(eps, k)
+	}
 }
 
 func main() {
