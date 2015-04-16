@@ -139,8 +139,8 @@ func read(file string, start *time.Time, interval time.Duration) []gc {
 	return gcs
 }
 
-func prepare(values interface{}, graphs []string) [][]chart.EPoint {
-	results := make([][]chart.EPoint, 0, 20)
+func prepare(values interface{}, graphs []string) []map[string][]chart.EPoint {
+	results := make([]map[string][]chart.EPoint, 0, 20)
 	for _, g := range graphs {
 		ep := make([]chart.EPoint, 0, 20)
 		switch data := values.(type) {
@@ -155,7 +155,8 @@ func prepare(values interface{}, graphs []string) [][]chart.EPoint {
 					DeltaY: math.NaN(),
 				})
 			}
-			results = append(results, ep)
+			var m = map[string][]chart.EPoint{g: ep}
+			results = append(results, m)
 		default:
 			log.Fatalf("Unkown type %v", data)
 		}
@@ -163,15 +164,19 @@ func prepare(values interface{}, graphs []string) [][]chart.EPoint {
 	return results
 }
 
-func plot(eps [][]chart.EPoint, title string) error {
+// eps is {"S0U": [chart.EPoint{X: xx, Y: yy, DeltaX: aa, DeltaY: bb}]}
+// see https://github.com/mattn/gorecast/blob/master/graph.go#L47
+func plot(eps []map[string][]chart.EPoint, title string) error {
 	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
 	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
 	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
 
 	c := chart.ScatterChart{Title: title}
 	c.XRange.TicSetting.Grid = 1
-	for _, v := range eps {
-		c.AddData("", v, chart.PlotStyleLines, chart.Style{})
+	for _, data := range eps {
+		for k, v := range data {
+			c.AddData(k, v, chart.PlotStyleLines, chart.Style{})
+		}
 	}
 
 	c.XRange.Time = true
@@ -190,111 +195,6 @@ func plot(eps [][]chart.EPoint, title string) error {
 
 	return png.Encode(f, rgba)
 }
-
-/*
-// https://github.com/mattn/gorecast/blob/master/graph.go#L47
-func plot(values interface{}, category string) (error) {
-	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
-	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
-	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
-
-	ec := make([]chart.EPoint, 0, 20)
-	eu := make([]chart.EPoint, 0, 20)
-
-	s0c := make([]chart.EPoint, 0, 20)
-	s0u := make([]chart.EPoint, 0, 20)
-
-	s1c := make([]chart.EPoint, 0, 20)
-	s1u := make([]chart.EPoint, 0, 20)
-
-	switch data := values.(type) {
-	case []gc:
-		for _, v := range data {
-			r := reflect.ValueOf(v)
-			f := reflect.Indirect(r).FieldByName("EC")
-			fmt.Println(f.Float())
-
-
-
-			ec = append(ec, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.EC),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-
-			eu = append(eu, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.EU),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-
-			s0c = append(s0c, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.S0C),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-
-			s0u = append(s0u, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.S0U),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-
-			s1c = append(s1c, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.S1C),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-			s1u = append(s1u, chart.EPoint{
-				X: float64(v.time.Unix()),
-				Y: float64(v.S1U),
-				DeltaX: math.NaN(),
-				DeltaY: math.NaN(),
-			})
-
-		}
-	case []gcutil:
-	default:
-		log.Fatalf("Unkown type %v", data)
-	}
-
-	c := chart.ScatterChart{Title: category}
-	c.XRange.TicSetting.Grid = 1
-	if len(ec) > 0 {
-		if category == "eden" {
-			c.AddData("", eu, chart.PlotStyleLines, chart.Style{})
-			c.AddData("", ec, chart.PlotStyleLines, chart.Style{})
-		} else if category == "survivor0" {
-			c.AddData("", s0u, chart.PlotStyleLines, chart.Style{})
-			c.AddData("", s0c, chart.PlotStyleLines, chart.Style{})
-		} else if category == "survivor1" {
-			c.AddData("", s1u, chart.PlotStyleLines, chart.Style{})
-			c.AddData("", s1c, chart.PlotStyleLines, chart.Style{})
-		}
-	}
-	c.XRange.Time = true
-	c.XRange.TicSetting.TFormat = func(t time.Time, td chart.TimeDelta) string {
-		return t.Format("15:04:05")
-	}
-	c.YRange.Label = "count"
-
-	c.Plot(img)
-
-
-	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", category)))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return png.Encode(f, rgba)
-}
-*/
 
 func setupFont() {
 	cwd, err := os.Getwd()
@@ -338,6 +238,7 @@ func run(c *cli.Context) {
 		"Old":       []string{"OC", "OU"},
 		"Perm":      []string{"PC", "PU"},
 		"GcCount":   []string{"YGC", "FGC"},
+		"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "EC", "EU", "OC", "OU", "PC", "PU"},
 	}
 
 	for k, v := range categories {
