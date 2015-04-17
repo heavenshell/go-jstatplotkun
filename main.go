@@ -107,18 +107,18 @@ func parseGcutil(line string) gcutil {
 	return gcutil
 }
 
-func read(file string, start *time.Time, interval time.Duration) []gc {
+func read(file string) ([]string, error) {
 	_, err := os.Stat(file)
 	if err != nil {
 		log.Fatal(err)
-		os.Exit(1)
+		return nil, err
 	}
 
 	var fp *os.File
 	fp, err = os.Open(file)
 	if err != nil {
 		log.Fatal(err)
-		os.Exit(1)
+		return nil, err
 	}
 	defer fp.Close()
 
@@ -127,6 +127,11 @@ func read(file string, start *time.Time, interval time.Duration) []gc {
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
+
+	return lines, nil
+}
+
+func parse(lines []string, start *time.Time, interval time.Duration) []gc {
 
 	length := len(lines)
 	gcs := make([]gc, length-1)
@@ -225,11 +230,16 @@ func run(c *cli.Context) {
 
 	t, err := time.Parse(timeformat, start)
 	if err != nil {
-		log.Fatalf("Fail to parse. %v", err)
+		log.Fatalf("fail to parse. %v", err)
 	}
 	d := time.Duration(interval)
 
-	gcs := read(jstatPath, &t, d)
+	lines, err := read(jstatPath)
+	if err != nil {
+		log.Fatalf("fail to read file %v", err)
+	}
+
+	gcs := parse(lines, &t, d)
 
 	categories := map[string][]string{
 		"Survivor0": []string{"S0C", "S0U"},
