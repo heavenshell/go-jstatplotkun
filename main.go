@@ -30,8 +30,10 @@ const timeformat = "2006-01-02 15:04:05"
 var jst = time.FixedZone("Asia/Tokyo", 9*60*60)
 
 type appContex struct {
-	gc   string
-	path string
+	gc            string
+	path          string
+	startDateTime *time.Time
+	interval      time.Duration
 }
 
 // jstat -gc option.
@@ -131,14 +133,15 @@ func read(file string) ([]string, error) {
 	return lines, nil
 }
 
-func parse(lines []string, start *time.Time, interval time.Duration) []gc {
-
+func parse(lines []string, ctx appContex) []gc {
 	length := len(lines)
 	gcs := make([]gc, length-1)
+	// 1st line is a title such as `S0C    S1C    S0U    S1U` etc.
+	// So start index 1.
 	for i := 1; i < length; i++ {
-		t := start.Add(interval)
+		t := ctx.startDateTime.Add(ctx.interval)
 		gcs[i-1] = parseGc(string(lines[i]), t)
-		start = &t
+		ctx.startDateTime = &t
 	}
 
 	return gcs
@@ -218,7 +221,7 @@ func setupFont() {
 }
 
 func run(c *cli.Context) {
-	//jstatOption := c.String("gc")
+	jstatOption := c.String("gc")
 	jstatPath := c.String("path")
 	start := c.String("date")
 	if start == "" {
@@ -226,20 +229,21 @@ func run(c *cli.Context) {
 	}
 	interval := c.Int("interval") * int(time.Millisecond)
 
-	//ctx := appContex{gc: jstatOption, path: jstatPath}
+	ctx := appContex{gc: jstatOption, path: jstatPath}
 
 	t, err := time.Parse(timeformat, start)
 	if err != nil {
 		log.Fatalf("fail to parse. %v", err)
 	}
-	d := time.Duration(interval)
+	ctx.interval = time.Duration(interval)
+	ctx.startDateTime = &t
 
 	lines, err := read(jstatPath)
 	if err != nil {
 		log.Fatalf("fail to read file %v", err)
 	}
 
-	gcs := parse(lines, &t, d)
+	gcs := parse(lines, ctx)
 
 	categories := map[string][]string{
 		"Survivor0": []string{"S0C", "S0U"},
