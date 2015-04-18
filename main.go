@@ -27,54 +27,75 @@ import (
 // Time format for parse string.
 const timeformat = "2006-01-02 15:04:05"
 
+// Time zone.
 var jst = time.FixedZone("Asia/Tokyo", 9*60*60)
 
+// Application context.
 type appContex struct {
-	gc            string
+	jstatOption   string
 	path          string
 	startDateTime *time.Time
 	interval      time.Duration
+	distPath      string
+}
+
+type metrix struct {
+	points []point
+	bars   []bar
+}
+
+type point struct {
+	title string
+	point []chart.EPoint
+}
+
+type bar struct {
+	title string
+	x     []float64
+	y     []float64
 }
 
 // jstat -gc option.
 type gc struct {
 	time time.Time
-	S0C  float64
-	S1C  float64
-	S0U  float64
-	S1U  float64
-	EC   float64
-	EU   float64
-	OC   float64
-	OU   float64
-	PC   float64
-	PU   float64
-	YGC  float64
-	YGCT float64
-	FGC  float64
-	FGCT float64
-	GCT  float64
+	S0C  float64 `graph:"ScatterChart"`
+	S1C  float64 `graph:"ScatterChart"`
+	S0U  float64 `graph:"ScatterChart"`
+	S1U  float64 `graph:"ScatterChart"`
+	EC   float64 `graph:"ScatterChart"`
+	EU   float64 `graph:"ScatterChart"`
+	OC   float64 `graph:"ScatterChart"`
+	OU   float64 `graph:"ScatterChart"`
+	PC   float64 `graph:"ScatterChart"`
+	PU   float64 `graph:"ScatterChart"`
+	YGC  float64 `graph:"ScatterChart"`
+	YGCT float64 `graph:"BarChart"`
+	FGC  float64 `graph:"BarChart"`
+	FGCT float64 `graph:"BarChart"`
+	GCT  float64 `graph:"BarChart"`
 }
 
 // jstat -gcutil option.
 type gcutil struct {
-	S0C  float64
-	S1C  float64
-	E    float64
-	O    float64
-	P    float64
-	YGC  float64
-	YGCT float64
-	FGC  float64
-	FGCT float64
-	GCT  float64
+	S0C  float64 `graph:"ScatterChart"`
+	S1C  float64 `graph:"ScatterChart"`
+	E    float64 `graph:"ScatterChart"`
+	O    float64 `graph:"ScatterChart"`
+	P    float64 `graph:"ScatterChart"`
+	YGC  float64 `graph:"ScatterChart"`
+	YGCT float64 `graph:"BarChart"`
+	FGC  float64 `graph:"BarChart"`
+	FGCT float64 `graph:"BarChart"`
+	GCT  float64 `graph:"BarChart"`
 }
 
+// Regex pattern for parse jstat log file.
 var pattern = regexp.MustCompile("\\s+")
 
 // Font
 var font *truetype.Font
 
+// Shortcut to convert.
 func tof64(v string) float64 {
 	var ret, _ = strconv.ParseFloat(v, 64)
 	return ret
@@ -133,57 +154,122 @@ func read(file string) ([]string, error) {
 	return lines, nil
 }
 
-func parse(lines []string, ctx appContex) []gc {
+func parse(lines []string, ctx appContex) (interface{}, error) {
 	length := len(lines)
-	gcs := make([]gc, length-1)
-	// 1st line is a title such as `S0C    S1C    S0U    S1U` etc.
-	// So start index 1.
-	for i := 1; i < length; i++ {
-		t := ctx.startDateTime.Add(ctx.interval)
-		gcs[i-1] = parseGc(string(lines[i]), t)
-		ctx.startDateTime = &t
+	switch ctx.jstatOption {
+	case "gc":
+		results := make([]gc, length-1)
+		// TODO Refactor
+		// 1st line is a title such as `S0C    S1C    S0U    S1U` etc.
+		// So start index 1.
+		for i := 1; i < length; i++ {
+			t := ctx.startDateTime.Add(ctx.interval)
+			results[i-1] = parseGc(string(lines[i]), t)
+			ctx.startDateTime = &t
+		}
+		return results, nil
+	case "gcutil":
+	default:
 	}
 
-	return gcs
+	return nil, fmt.Errorf("can not parse jstat file.")
 }
 
-func prepare(values interface{}, graphs []string) []map[string][]chart.EPoint {
-	results := make([]map[string][]chart.EPoint, 0, 20)
+func prepare(values interface{}, graphs []string) metrix { //[]map[string][]chart.EPoint {
+	p := point{}
+	b := bar{}
+	metrix := metrix{}
+	points := make([]point, 0, 20)
+	bars := make([]bar, 0, 20)
+	//results := make([]map[string][]chart.EPoint, 0, 20)
 	for _, g := range graphs {
 		ep := make([]chart.EPoint, 0, 20)
+		x := make([]float64, 0, 20)
+		y := make([]float64, 0, 20)
 		switch data := values.(type) {
 		case []gc:
 			for _, v := range data {
 				r := reflect.ValueOf(v)
 				f := reflect.Indirect(r).FieldByName(g)
-				ep = append(ep, chart.EPoint{
-					X:      float64(v.time.Unix()),
-					Y:      float64(f.Float()),
-					DeltaX: math.NaN(),
-					DeltaY: math.NaN(),
-				})
+				st := reflect.TypeOf(v)
+				field, _ := st.FieldByName(g)
+				graphType := field.Tag.Get("graph")
+
+				if graphType == "ScatterChart" {
+					ep = append(ep, chart.EPoint{
+						X:      float64(v.time.Unix()),
+						Y:      float64(f.Float()),
+						DeltaX: math.NaN(),
+						DeltaY: math.NaN(),
+					})
+				} else if graphType == "BarChart" {
+					x = append(x, float64(v.time.Unix()))
+					y = append(y, float64(f.Float()))
+				}
 			}
-			var m = map[string][]chart.EPoint{g: ep}
-			results = append(results, m)
+
+			if len(ep) > 0 {
+				p.title = g
+				p.point = ep
+				points = append(points, p)
+			}
+
+			if len(b.x) > 0 {
+				b.title = g
+				b.x = x
+				b.y = y
+				bars = append(bars, b)
+			}
+
 		default:
 			log.Fatalf("Unkown type %v", data)
 		}
+		metrix.points = points
+		metrix.bars = bars
 	}
-	return results
+	//return results
+	return metrix
 }
 
-// eps is {"S0U": [chart.EPoint{X: xx, Y: yy, DeltaX: aa, DeltaY: bb}]}
 // see https://github.com/mattn/gorecast/blob/master/graph.go#L47
-func plot(eps []map[string][]chart.EPoint, title string) error {
+func plotScatter(points []point, title string) error {
 	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
 	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
 	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
 
 	c := chart.ScatterChart{Title: title}
 	c.XRange.TicSetting.Grid = 1
-	for _, data := range eps {
-		for k, v := range data {
-			c.AddData(k, v, chart.PlotStyleLines, chart.Style{})
+	for _, p := range points {
+		c.AddData(p.title, p.point, chart.PlotStyleLines, chart.Style{})
+	}
+
+	c.XRange.Time = true
+	c.XRange.TicSetting.TFormat = func(t time.Time, td chart.TimeDelta) string {
+		return t.Format("15:04:05")
+	}
+	c.YRange.Label = "count"
+
+	c.Plot(img)
+
+	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", title)))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return png.Encode(f, rgba)
+}
+
+func plotBar(bars []bar, title string) error {
+	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
+	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
+	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
+
+	c := chart.BarChart{Title: title}
+	c.XRange.TicSetting.Grid = 1
+	for _, b := range bars {
+		if len(b.x) > 0 {
+			c.AddDataPair(b.title, b.x, b.y, chart.Style{})
 		}
 	}
 
@@ -229,23 +315,30 @@ func run(c *cli.Context) {
 	}
 	interval := c.Int("interval") * int(time.Millisecond)
 
-	ctx := appContex{gc: jstatOption, path: jstatPath}
-
 	t, err := time.Parse(timeformat, start)
 	if err != nil {
 		log.Fatalf("fail to parse. %v", err)
 	}
-	ctx.interval = time.Duration(interval)
-	ctx.startDateTime = &t
+	//distPath := c.String("dist")
+
+	ctx := appContex{
+		jstatOption:   jstatOption,
+		path:          jstatPath,
+		interval:      time.Duration(interval),
+		startDateTime: &t,
+	}
 
 	lines, err := read(jstatPath)
 	if err != nil {
 		log.Fatalf("fail to read file %v", err)
 	}
 
-	gcs := parse(lines, ctx)
+	values, err := parse(lines, ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	categories := map[string][]string{
+	charts := map[string][]string{
 		"Survivor0": []string{"S0C", "S0U"},
 		"Survivor1": []string{"S1C", "S1U"},
 		"Eden":      []string{"EC", "EU"},
@@ -254,11 +347,18 @@ func run(c *cli.Context) {
 		"GcCount":   []string{"YGC", "FGC"},
 		"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "EC", "EU", "OC", "OU", "PC", "PU"},
 	}
-
-	for k, v := range categories {
-		eps := prepare(gcs, v)
-		plot(eps, k)
+	// When using gorutine
+	//   1.61s user 0.36s system 86% cpu 2.278 total
+	// not using gorutine
+	//   1.59s user 0.27s system 101% cpu 1.823 total
+	for k, v := range charts {
+		metrix := prepare(values, v)
+		plotScatter(metrix.points, k)
 	}
+
+	metrix := prepare(values, []string{"YGCT", "FGCT", "FGCT"})
+	plotBar(metrix.bars, "GcTime")
+
 }
 
 func main() {
@@ -287,8 +387,13 @@ func main() {
 				},
 				cli.IntFlag{
 					Name:  "interval",
-					Usage: "interval of jstat",
+					Usage: "interval mill sec of jstat",
 					Value: 1000,
+				},
+				cli.StringFlag{
+					Name:  "output",
+					Usage: "output file path",
+					Value: "./dist",
 				},
 			},
 		},
