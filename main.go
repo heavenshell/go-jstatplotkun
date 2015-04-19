@@ -69,10 +69,10 @@ type gc struct {
 	PC   float64 `graph:"ScatterChart"`
 	PU   float64 `graph:"ScatterChart"`
 	YGC  float64 `graph:"ScatterChart"`
-	YGCT float64 `graph:"BarChart"`
-	FGC  float64 `graph:"BarChart"`
-	FGCT float64 `graph:"BarChart"`
-	GCT  float64 `graph:"BarChart"`
+	YGCT float64 `graph:"ScatterChart"`
+	FGC  float64 `graph:"ScatterChart"`
+	FGCT float64 `graph:"ScatterChart"`
+	GCT  float64 `graph:"ScatterChart"`
 }
 
 // jstat -gcutil option.
@@ -177,15 +177,10 @@ func parse(lines []string, ctx appContex) (interface{}, error) {
 
 func prepare(values interface{}, graphs []string) metrix { //[]map[string][]chart.EPoint {
 	p := point{}
-	b := bar{}
 	metrix := metrix{}
 	points := make([]point, 0, 20)
-	bars := make([]bar, 0, 20)
-	//results := make([]map[string][]chart.EPoint, 0, 20)
 	for _, g := range graphs {
 		ep := make([]chart.EPoint, 0, 20)
-		x := make([]float64, 0, 20)
-		y := make([]float64, 0, 20)
 		switch data := values.(type) {
 		case []gc:
 			for _, v := range data {
@@ -202,32 +197,18 @@ func prepare(values interface{}, graphs []string) metrix { //[]map[string][]char
 						DeltaX: math.NaN(),
 						DeltaY: math.NaN(),
 					})
-				} else if graphType == "BarChart" {
-					x = append(x, float64(v.time.Unix()))
-					y = append(y, float64(f.Float()))
 				}
 			}
 
-			if len(ep) > 0 {
-				p.title = g
-				p.point = ep
-				points = append(points, p)
-			}
-
-			if len(b.x) > 0 {
-				b.title = g
-				b.x = x
-				b.y = y
-				bars = append(bars, b)
-			}
+			p.title = g
+			p.point = ep
+			points = append(points, p)
 
 		default:
 			log.Fatalf("Unkown type %v", data)
 		}
 		metrix.points = points
-		metrix.bars = bars
 	}
-	//return results
 	return metrix
 }
 
@@ -241,36 +222,6 @@ func plotScatter(points []point, title string) error {
 	c.XRange.TicSetting.Grid = 1
 	for _, p := range points {
 		c.AddData(p.title, p.point, chart.PlotStyleLines, chart.Style{})
-	}
-
-	c.XRange.Time = true
-	c.XRange.TicSetting.TFormat = func(t time.Time, td chart.TimeDelta) string {
-		return t.Format("15:04:05")
-	}
-	c.YRange.Label = "count"
-
-	c.Plot(img)
-
-	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", title)))
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return png.Encode(f, rgba)
-}
-
-func plotBar(bars []bar, title string) error {
-	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
-	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
-	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
-
-	c := chart.BarChart{Title: title}
-	c.XRange.TicSetting.Grid = 1
-	for _, b := range bars {
-		if len(b.x) > 0 {
-			c.AddDataPair(b.title, b.x, b.y, chart.Style{})
-		}
 	}
 
 	c.XRange.Time = true
@@ -319,13 +270,20 @@ func run(c *cli.Context) {
 	if err != nil {
 		log.Fatalf("fail to parse. %v", err)
 	}
-	//distPath := c.String("dist")
+	distPath, err := filepath.Abs(c.String("dist"))
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(distPath); os.IsNotExist(err) {
+		os.Mkdir(distPath, 644)
+	}
 
 	ctx := appContex{
 		jstatOption:   jstatOption,
 		path:          jstatPath,
 		interval:      time.Duration(interval),
 		startDateTime: &t,
+		distPath:      distPath,
 	}
 
 	lines, err := read(jstatPath)
@@ -346,6 +304,7 @@ func run(c *cli.Context) {
 		"Perm":      []string{"PC", "PU"},
 		"GcCount":   []string{"YGC", "FGC"},
 		"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "EC", "EU", "OC", "OU", "PC", "PU"},
+		"GcTime":    []string{"YGCT", "FGCT", "FGCT"},
 	}
 	// When using gorutine
 	//   1.61s user 0.36s system 86% cpu 2.278 total
@@ -355,9 +314,6 @@ func run(c *cli.Context) {
 		metrix := prepare(values, v)
 		plotScatter(metrix.points, k)
 	}
-
-	metrix := prepare(values, []string{"YGCT", "FGCT", "FGCT"})
-	plotBar(metrix.bars, "GcTime")
 
 }
 
