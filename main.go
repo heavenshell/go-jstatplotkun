@@ -19,6 +19,7 @@ import (
 
 	"code.google.com/p/freetype-go/freetype"
 	"code.google.com/p/freetype-go/freetype/truetype"
+	"github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/vdobler/chart"
 	"github.com/vdobler/chart/imgg"
@@ -32,11 +33,13 @@ var jst = time.FixedZone("Asia/Tokyo", 9*60*60)
 
 // Application context.
 type appContex struct {
-	jstatOption   string
-	path          string
-	startDateTime *time.Time
-	interval      time.Duration
-	distPath      string
+	jstatOption     string
+	path            string
+	startDateTime   *time.Time
+	interval        time.Duration
+	distPath        string
+	logger          *logrus.Logger
+	ignoreTimestamp bool
 }
 
 type metrix struct {
@@ -77,16 +80,17 @@ type gc struct {
 
 // jstat -gcutil option.
 type gcutil struct {
+	time time.Time
 	S0C  float64 `graph:"ScatterChart"`
 	S1C  float64 `graph:"ScatterChart"`
 	E    float64 `graph:"ScatterChart"`
 	O    float64 `graph:"ScatterChart"`
 	P    float64 `graph:"ScatterChart"`
 	YGC  float64 `graph:"ScatterChart"`
-	YGCT float64 `graph:"BarChart"`
-	FGC  float64 `graph:"BarChart"`
-	FGCT float64 `graph:"BarChart"`
-	GCT  float64 `graph:"BarChart"`
+	YGCT float64 `graph:"ScatterChart"`
+	FGC  float64 `graph:"ScatterChart"`
+	FGCT float64 `graph:"ScatterChart"`
+	GCT  float64 `graph:"ScatterChart"`
 }
 
 // Regex pattern for parse jstat log file.
@@ -101,10 +105,10 @@ func tof64(v string) float64 {
 	return ret
 }
 
-func parseGc(line string, start time.Time) gc {
+//
+func parseGc(line string, start time.Time, ctx appContex) gc {
 	lines := pattern.Split(line, -1)
 	gc := gc{
-		time: start,
 		S0C:  tof64(lines[0]),
 		S1C:  tof64(lines[1]),
 		S0U:  tof64(lines[2]),
@@ -121,12 +125,32 @@ func parseGc(line string, start time.Time) gc {
 		FGCT: tof64(lines[13]),
 		GCT:  tof64(lines[14]),
 	}
+	if ctx.ignoreTimestamp == false {
+		gc.time = start
+	}
 
 	return gc
 }
 
-func parseGcutil(line string) gcutil {
-	gcutil := gcutil{}
+// Parse `jstat -gcutil` log file.
+// S0     S1     E      O      P     YGC     YGCT    FGC    FGCT     GCT
+func parseGcUtil(line string, start time.Time, ctx appContex) gcutil {
+	lines := pattern.Split(line, -1)
+	gcutil := gcutil{
+		S0C:  tof64(lines[0]),
+		S1C:  tof64(lines[1]),
+		E:    tof64(lines[2]),
+		O:    tof64(lines[3]),
+		P:    tof64(lines[4]),
+		YGC:  tof64(lines[5]),
+		YGCT: tof64(lines[6]),
+		FGC:  tof64(lines[7]),
+		FGCT: tof64(lines[8]),
+		GCT:  tof64(lines[9]),
+	}
+	if ctx.ignoreTimestamp == false {
+		gcutil.time = start
+	}
 	return gcutil
 }
 
@@ -154,35 +178,48 @@ func read(file string) ([]string, error) {
 	return lines, nil
 }
 
+// Parse jstat -gc or jstat -gcutil.
 func parse(lines []string, ctx appContex) (interface{}, error) {
 	length := len(lines)
+
 	switch ctx.jstatOption {
 	case "gc":
 		results := make([]gc, length-1)
 		// TODO Refactor
 		// 1st line is a title such as `S0C    S1C    S0U    S1U` etc.
-		// So start index 1.
+		// So start index no is 1.
 		for i := 1; i < length; i++ {
 			t := ctx.startDateTime.Add(ctx.interval)
-			results[i-1] = parseGc(string(lines[i]), t)
+			results[i-1] = parseGc(string(lines[i]), t, ctx)
 			ctx.startDateTime = &t
 		}
 		return results, nil
 	case "gcutil":
+		results := make([]gcutil, length-1)
+		// TODO Refactor
+		// 1st line is a title such as `S0C    S1C    S0U    S1U` etc.
+		// So start index no is 1.
+		for i := 1; i < length; i++ {
+			t := ctx.startDateTime.Add(ctx.interval)
+			results[i-1] = parseGcUtil(string(lines[i]), t, ctx)
+			ctx.startDateTime = &t
+		}
+		return results, nil
+
 	default:
 	}
 
 	return nil, fmt.Errorf("can not parse jstat file.")
 }
 
-func prepare(values interface{}, graphs []string) metrix { //[]map[string][]chart.EPoint {
+func prepare(values interface{}, graphs []string) metrix {
 	p := point{}
 	metrix := metrix{}
 	points := make([]point, 0, 20)
 	for _, g := range graphs {
-		ep := make([]chart.EPoint, 0, 20)
 		switch data := values.(type) {
 		case []gc:
+			ep := make([]chart.EPoint, 0, 20)
 			for _, v := range data {
 				r := reflect.ValueOf(v)
 				f := reflect.Indirect(r).FieldByName(g)
@@ -203,7 +240,28 @@ func prepare(values interface{}, graphs []string) metrix { //[]map[string][]char
 			p.title = g
 			p.point = ep
 			points = append(points, p)
+		case []gcutil:
+			ep := make([]chart.EPoint, 0, 20)
+			for _, v := range data {
+				r := reflect.ValueOf(v)
+				f := reflect.Indirect(r).FieldByName(g)
+				st := reflect.TypeOf(v)
+				field, _ := st.FieldByName(g)
+				graphType := field.Tag.Get("graph")
 
+				if graphType == "ScatterChart" {
+					ep = append(ep, chart.EPoint{
+						X:      float64(v.time.Unix()),
+						Y:      float64(f.Float()),
+						DeltaX: math.NaN(),
+						DeltaY: math.NaN(),
+					})
+				}
+			}
+
+			p.title = g
+			p.point = ep
+			points = append(points, p)
 		default:
 			log.Fatalf("Unkown type %v", data)
 		}
@@ -212,8 +270,9 @@ func prepare(values interface{}, graphs []string) metrix { //[]map[string][]char
 	return metrix
 }
 
+// Generate scatter chart.
 // see https://github.com/mattn/gorecast/blob/master/graph.go#L47
-func plotScatter(points []point, title string) error {
+func plotScatter(points []point, title string, ctx appContex) error {
 	rgba := image.NewRGBA(image.Rect(0, 0, 1024, 768))
 	draw.Draw(rgba, rgba.Bounds(), image.White, image.ZP, draw.Src)
 	img := imgg.AddTo(rgba, 0, 0, 1024, 768, color.RGBA{0xff, 0xff, 0xff, 0xff}, font, imgg.ConstructFontSizes(13))
@@ -232,8 +291,9 @@ func plotScatter(points []point, title string) error {
 
 	c.Plot(img)
 
-	f, err := os.Create(filepath.Join("./", fmt.Sprintf("%s.png", title)))
+	f, err := os.Create(fmt.Sprintf("%s/%s.png", ctx.distPath, title))
 	if err != nil {
+		fmt.Println(err)
 		return err
 	}
 	defer f.Close()
@@ -245,7 +305,6 @@ func setupFont() {
 	cwd, err := os.Getwd()
 	if err != nil {
 		log.Println(err)
-		return
 	}
 	b, err := ioutil.ReadFile(filepath.Join(cwd, "fonts", "ipaexg.ttf"))
 	if err != nil {
@@ -258,6 +317,7 @@ func setupFont() {
 }
 
 func run(c *cli.Context) {
+	logger := setupLog(c.String("verbose"))
 	jstatOption := c.String("gc")
 	jstatPath := c.String("path")
 	start := c.String("date")
@@ -270,51 +330,88 @@ func run(c *cli.Context) {
 	if err != nil {
 		log.Fatalf("fail to parse. %v", err)
 	}
-	distPath, err := filepath.Abs(c.String("dist"))
+	logger.Info(fmt.Sprintf("reading jstat file is %s", jstatPath))
+	distPath, err := filepath.Abs(c.String("output"))
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 	if _, err := os.Stat(distPath); os.IsNotExist(err) {
-		os.Mkdir(distPath, 644)
+		os.Mkdir(distPath, 0755)
 	}
+
+	ignoreTimestamp := c.Bool("ignore-timestamp")
 
 	ctx := appContex{
-		jstatOption:   jstatOption,
-		path:          jstatPath,
-		interval:      time.Duration(interval),
-		startDateTime: &t,
-		distPath:      distPath,
+		jstatOption:     jstatOption,
+		path:            jstatPath,
+		interval:        time.Duration(interval),
+		startDateTime:   &t,
+		distPath:        distPath,
+		logger:          logger,
+		ignoreTimestamp: ignoreTimestamp,
 	}
 
+	logger.Debug("start read jstat file")
 	lines, err := read(jstatPath)
 	if err != nil {
 		log.Fatalf("fail to read file %v", err)
 	}
 
+	logger.Debug("start parse jstat file")
 	values, err := parse(lines, ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	charts := map[string][]string{
-		"Survivor0": []string{"S0C", "S0U"},
-		"Survivor1": []string{"S1C", "S1U"},
-		"Eden":      []string{"EC", "EU"},
-		"Old":       []string{"OC", "OU"},
-		"Perm":      []string{"PC", "PU"},
-		"GcCount":   []string{"YGC", "FGC"},
-		"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "EC", "EU", "OC", "OU", "PC", "PU"},
-		"GcTime":    []string{"YGCT", "FGCT", "FGCT"},
+	charts := map[string][]string{}
+	if jstatOption == "gc" {
+		charts = map[string][]string{
+			"Survivor0": []string{"S0C", "S0U"},
+			"Survivor1": []string{"S1C", "S1U"},
+			"Eden":      []string{"EC", "EU"},
+			"Old":       []string{"OC", "OU"},
+			"Perm":      []string{"PC", "PU"},
+			"GcCount":   []string{"YGC", "FGC"},
+			"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "EC", "EU", "OC", "OU", "PC", "PU"},
+			"GcTime":    []string{"YGCT", "FGCT", "FGCT"},
+		}
+	} else if jstatOption == "gcutil" {
+		charts = map[string][]string{
+			"Survivor0": []string{"S0C", "S0U"},
+			"Survivor1": []string{"S1C", "S1U"},
+			"Eden":      []string{"E"},
+			"Old":       []string{"O"},
+			"Perm":      []string{"P"},
+			"GcCount":   []string{"YGC", "FGC"},
+			"Heap":      []string{"S0C", "S0U", "S1C", "S1U", "E", "O", "P"},
+			"GcTime":    []string{"YGCT", "FGCT", "FGCT"},
+		}
+
 	}
 	// When using gorutine
 	//   1.61s user 0.36s system 86% cpu 2.278 total
 	// not using gorutine
 	//   1.59s user 0.27s system 101% cpu 1.823 total
 	for k, v := range charts {
+		logger.Debug(fmt.Sprintf("start parse %s", k))
 		metrix := prepare(values, v)
-		plotScatter(metrix.points, k)
+		plotScatter(metrix.points, k, ctx)
+	}
+	logger.Info("finished")
+}
+
+func setupLog(logLevel string) *logrus.Logger {
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		log.Fatalf("Log level error %v", err)
+	}
+	logger := logrus.Logger{
+		Formatter: &logrus.TextFormatter{DisableColors: false},
+		Level:     level,
+		Out:       os.Stdout,
 	}
 
+	return &logger
 }
 
 func main() {
@@ -350,6 +447,15 @@ func main() {
 					Name:  "output",
 					Usage: "output file path",
 					Value: "./dist",
+				},
+				cli.StringFlag{
+					Name:  "verbose",
+					Usage: "Logger verbose",
+					Value: logrus.InfoLevel.String(),
+				},
+				cli.BoolFlag{
+					Name:  "ignore-timestamp",
+					Usage: "ignore timestamp",
 				},
 			},
 		},
