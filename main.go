@@ -393,7 +393,7 @@ func run(c *cli.Context) {
 	// not using gorutine
 	//   1.59s user 0.27s system 101% cpu 1.823 total
 	for k, v := range charts {
-		logger.Debug(fmt.Sprintf("start parse %s", k))
+		logger.Debugf("start parse %s", k)
 		metrix := prepare(values, v)
 		plotScatter(metrix.points, k, ctx)
 	}
