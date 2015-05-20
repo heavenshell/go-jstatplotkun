@@ -158,14 +158,12 @@ func read(file string) ([]string, error) {
 	_, err := os.Stat(file)
 	if err != nil {
 		log.Fatal(err)
-		return nil, err
 	}
 
 	var fp *os.File
 	fp, err = os.Open(file)
 	if err != nil {
 		log.Fatal(err)
-		return nil, err
 	}
 	defer fp.Close()
 
